@@ -1,23 +1,8 @@
 package babychange
 
-import spray.json.DefaultJsonProtocol._
-import spray.json._
+import spray.json.{JsonFormat, _}
 
-object model {
-
-  sealed trait Availability
-  case object Yes extends Availability
-  case object YesVerified extends Availability
-  case object No extends Availability
-  case object NoVerified extends Availability
-  case object Unknown extends Availability
-
-  case class Facilities(
-     babyChanging: Availability,
-     highchairs: Availability,
-     highchairTrays: Availability,
-     kidsMenu: Availability
-  )
+object model extends DefaultJsonProtocol {
 
   case class TimeOfDay(minutesSinceMidnight: Short) {
     override def toString: String = {
@@ -44,26 +29,40 @@ object model {
 
   case class GeoLocation(lat: BigDecimal, lon: BigDecimal)
 
-  case class Place(name: String, address: String, phone: String, location: GeoLocation, facilities: Facilities, openingHours: OpeningHours)
+  case class Place(name: String, categories: String, address: String, phone: String, location: GeoLocation, facilities: Map[String, Vector[String]], openingHours: OpeningHours) {
+    require(facilities.values.forall(tags => tags.contains("Yes") || tags.contains("No") || tags.contains("Unknown")), "All facilities must contain a Yes or No or Unknown. " + this.toString)
+  }
 
   case class PlaceSearchResult(place: Place, distanceInMetres: Int)
 
   case class PlaceSearchResults(places: Vector[PlaceSearchResult])
 
+  //Filters
 
-  implicit object AvailabilityFormat extends JsonFormat[Availability] {
-    override def read(json: JsValue): Availability = json match {
-      case JsString("Yes") => Yes
-      case JsString("YesVerified") => YesVerified
-      case JsString("No") => No
-      case JsString("NoVerified") => NoVerified
-      case JsString("Unknown") => Unknown
-      case x => deserializationError(x + " is not a valid Availability")
-    }
-    override def write(obj: Availability): JsValue = JsString(obj.toString)
+  case class FacilityFilter(facilities: Vector[(String,String)]) {
+    //TODO Prevent query injection
+    def toElasticSearchQueries = facilities.map { case (name, value) => s"""{ "term":  { "facilities.$name": "$value" }}""" }.mkString(",")
   }
 
-  implicit val FacilitiesFormat = jsonFormat4(Facilities.apply)
+  case class CategoryFilter(names: Vector[String]) {
+    //TODO Prevent query injection
+    def toElasticSearchQuery = s"""{ "terms":  { "categories": [ ${names.map("\"" + _ + "\"").mkString(",")} ] }}"""
+  }
+
+  // JSON Formats
+
+//  override implicit def vectorFormat[T :JsonFormat] = new JsonFormat[Vector[T]] {
+//
+//  }
+
+  implicit object EsVectorFormat extends JsonFormat[Vector[String]] {
+    override def read(json: JsValue): Vector[String] = json match {
+      case JsString(s) => Vector(s)
+      case JsArray(elements) => elements collect { case JsString(s) => s }
+      case x => deserializationError(x + " is not a valid Vector[String]")
+    }
+    override def write(strings: Vector[String]): JsValue = JsArray(strings.map(JsString.apply))
+  }
 
   implicit object TimeOfDayFormat extends JsonFormat[TimeOfDay] {
     override def read(json: JsValue): TimeOfDay = json match {
@@ -76,7 +75,7 @@ object model {
   implicit val DayOpeningHoursFormat = jsonFormat2(DayOpeningHours.apply)
   implicit val OpeningHoursFormat = jsonFormat7(OpeningHours.apply)
   implicit val GeoLocationFormat = jsonFormat2(GeoLocation.apply)
-  implicit val PlaceFormat = jsonFormat6(Place.apply)
+  implicit val PlaceFormat = jsonFormat7(Place.apply)
   implicit val PlaceSearchResultFormat = jsonFormat2(PlaceSearchResult.apply)
   implicit val PlaceSearchResultsFormat = jsonFormat1(PlaceSearchResults.apply)
 }

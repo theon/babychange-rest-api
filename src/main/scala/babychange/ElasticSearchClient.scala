@@ -8,7 +8,6 @@ import spray.json._
 import babychange.model._
 import akka.http.scaladsl.marshallers.sprayjson.SprayJsonSupport._
 import akka.stream.{ActorMaterializer, ActorMaterializerSettings}
-import spray.json.DefaultJsonProtocol._
 
 import scala.concurrent.Future
 
@@ -25,23 +24,30 @@ class ElasticSearchClient(implicit system: ActorSystem) {
   implicit val EsHitsFormat = jsonFormat1(EsHits.apply)
   implicit val EsResponseFormat = jsonFormat1(EsResponse.apply)
 
-  def findPlacesNearby(lat: Double, lon: Double): Future[PlaceSearchResults] = {
+  def findPlacesNearby(lat: Double, lon: Double, facilities: FacilityFilter, categories: CategoryFilter): Future[PlaceSearchResults] = {
 
-    val response = Http().singleRequest(
-      HttpRequest(
-        uri = "http://localhost:9200/places/place/_search",
-        entity = HttpEntity(
-          s"""
+    val request = HttpRequest(
+      uri = "http://localhost:9200/places/place/_search",
+      entity = HttpEntity(
+        s"""
              {
                "query": {
                  "filtered": {
                    "filter": {
-                     "geo_distance": {
-                       "distance": "50km",
-                       "location": {
-                         "lat":  $lat,
-                         "lon": $lon
-                       }
+                     "bool": {
+                       "must": [
+                         ${ if(categories.names.nonEmpty) categories.toElasticSearchQuery + "," else "" }
+                         ${ if(facilities.facilities.nonEmpty) facilities.toElasticSearchQueries + "," else "" }
+                         {
+                           "geo_distance": {
+                             "distance": "50km",
+                             "location": {
+                               "lat":  $lat,
+                               "lon": $lon
+                             }
+                           }
+                         }
+                       ]
                      }
                    }
                  }
@@ -61,8 +67,11 @@ class ElasticSearchClient(implicit system: ActorSystem) {
                  ]
              }
            """.parseJson.compactPrint)
-      )
     )
+
+    println(request)
+
+    val response = Http().singleRequest(request)
 
     for {
       r <- response

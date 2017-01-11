@@ -25,10 +25,27 @@ trait RestApi {
     if(lon < -180 || lon > 180) None else Some(lon)
   }
 
+  val facilityFilters = parameter("facilities".?) map { p =>
+    val facilityFiltersStrs = p.map(_.split(',').toVector).getOrElse(Vector.empty)
+    val facilityFiltersTuples = facilityFiltersStrs map { facilityFilter =>
+      val Array(name, value) = facilityFilter.split(':')
+      name -> value
+    }
+    FacilityFilter(facilityFiltersTuples)
+  }
+
+  val categoryFilters = parameter("categories".?) map { p =>
+    CategoryFilter(p.map(_.split(',').toVector).getOrElse(Vector.empty))
+  }
+
+  val filters = facilityFilters & categoryFilters
+
   val route =
-    path("places" / Latitude ~ "," ~ Longitude) { (lat, lon) =>
-      get {
-        complete(elasticSearchClient.findPlacesNearby(lat, lon))
+    get {
+      path("places" / Latitude ~ "," ~ Longitude) { (lat, lon) =>
+        filters { (facilities, categories) =>
+          complete(elasticSearchClient.findPlacesNearby(lat, lon, facilities, categories))
+        }
       }
     }
 }
