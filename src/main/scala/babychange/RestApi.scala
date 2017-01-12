@@ -5,11 +5,12 @@ import akka.http.scaladsl.server.Directives._
 import akka.http.scaladsl.server.{RejectionError, ValidationRejection}
 import akka.stream.ActorMaterializer
 import akka.http.scaladsl.marshallers.sprayjson.SprayJsonSupport._
-import babychange.model._
+import babychange.filters._
+import spray.json.DefaultJsonProtocol._
 
 trait RestApi {
 
-  implicit val system = ActorSystem("my-system")
+  implicit val system = ActorSystem("babychange-system")
   implicit val materializer = ActorMaterializer()
 
   val elasticSearchClient = new ElasticSearchClient
@@ -25,13 +26,11 @@ trait RestApi {
     if(lon < -180 || lon > 180) None else Some(lon)
   }
 
-  val facilityFilters = parameter("facilities".?) map { p =>
-    val facilityFiltersStrs = p.map(_.split(',').toVector).getOrElse(Vector.empty)
-    val facilityFiltersTuples = facilityFiltersStrs map { facilityFilter =>
-      val Array(name, value) = facilityFilter.split(':')
-      name -> value
+  val facilityFilters =  extractRequest map { r =>
+    val facilityFiltersTuples = r.uri.query().getAll("facility").map(_ split ':').collect {
+      case Array(name, value) => name -> value
     }
-    FacilityFilter(facilityFiltersTuples)
+    FacilityFilter(facilityFiltersTuples.toVector)
   }
 
   val categoryFilters = parameter("categories".?) map { p =>
@@ -46,6 +45,9 @@ trait RestApi {
         filters { (facilities, categories) =>
           complete(elasticSearchClient.findPlacesNearby(lat, lon, facilities, categories))
         }
+      } ~
+      path("filters") {
+        complete(allowedFilters)
       }
     }
 }

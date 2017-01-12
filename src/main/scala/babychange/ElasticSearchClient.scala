@@ -8,6 +8,7 @@ import spray.json._
 import babychange.model._
 import akka.http.scaladsl.marshallers.sprayjson.SprayJsonSupport._
 import akka.stream.{ActorMaterializer, ActorMaterializerSettings}
+import babychange.filters.{CategoryFilter, FacilityFilter}
 
 import scala.concurrent.Future
 
@@ -69,7 +70,7 @@ class ElasticSearchClient(implicit system: ActorSystem) {
            """.parseJson.compactPrint)
     )
 
-    println(request)
+//    println(request)
 
     val response = Http().singleRequest(request)
 
