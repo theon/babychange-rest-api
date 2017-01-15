@@ -29,9 +29,11 @@ object model extends DefaultJsonProtocol {
 
   case class GeoLocation(lat: BigDecimal, lon: BigDecimal)
 
-  case class Place(name: String, categories: String, address: String, phone: String, location: GeoLocation, facilities: Map[String, Vector[String]], openingHours: OpeningHours) {
-    require(facilities.values.forall(tags => tags.contains("Yes") || tags.contains("No") || tags.contains("Unknown")), "All facilities must contain a Yes or No or Unknown. " + this.toString)
+  case class Facilities(values: Map[String, Vector[String]]) {
+    require(values.values.forall(tags => tags.contains("Yes") || tags.contains("No") || tags.contains("Unknown")), "All facilities must contain a Yes or No or Unknown. " + this.toString)
   }
+
+  case class Place(name: String, categories: String, address: String, phone: String, location: GeoLocation, facilities: Facilities, openingHours: OpeningHours)
 
   case class PlaceSearchResult(place: Place, distanceInMetres: Int)
 
@@ -58,6 +60,18 @@ object model extends DefaultJsonProtocol {
       case x => deserializationError(x + " is not a valid TimeOfDay")
     }
     override def write(obj: TimeOfDay): JsValue = JsString(obj.toString)
+  }
+
+  implicit object FacilitiesFormat extends JsonFormat[Facilities] {
+    override def write(obj: Facilities): JsValue = {
+      val facilitiesJsons = obj.values.map { case (name, values) =>
+        JsObject("name" -> JsString(filters.facilityFilterNameLookup.getOrElse(name, name)), "queryName" -> JsString(name), "values" -> values.toJson)
+      }
+      JsArray(facilitiesJsons.toVector)
+    }
+
+    override def read(json: JsValue): Facilities =
+      Facilities(json.convertTo[Map[String,Vector[String]]])
   }
 
   implicit val DayOpeningHoursFormat = jsonFormat2(DayOpeningHours.apply)
