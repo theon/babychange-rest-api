@@ -6,7 +6,9 @@ import akka.http.scaladsl.server.{RejectionError, ValidationRejection}
 import akka.stream.ActorMaterializer
 import akka.http.scaladsl.marshallers.sprayjson.SprayJsonSupport._
 import babychange.filters._
-import spray.json.DefaultJsonProtocol._
+import babychange.model._
+
+import scala.util.{Failure, Success}
 
 trait RestApi {
 
@@ -46,8 +48,29 @@ trait RestApi {
           complete(elasticSearchClient.findPlacesNearby(lat, lon, facilities, categories))
         }
       } ~
+      path("reviews") {
+        parameter("place") { placeId =>
+          complete(elasticSearchClient.findReviewsForPlace(placeId))
+        }
+      } ~
       path("filters") {
         complete(allowedFilters)
+      }
+    } ~
+    post {
+      path("reviews") {
+        entity(as[NewReview]) { review: NewReview =>
+                //TODO: Auth
+          onComplete(elasticSearchClient.createReview(review)) {
+            case Success(newReviewResponse) =>
+              if(newReviewResponse.success)
+                complete(201, newReviewResponse)
+              else
+                complete(500, newReviewResponse)
+            case Failure(e) =>
+              complete(500, NewReviewResponse(false, Some(e.getMessage)))
+          }
+        }
       }
     }
 }
