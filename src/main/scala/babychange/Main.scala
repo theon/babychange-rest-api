@@ -8,7 +8,7 @@ object Main extends App with RestApi {
 
   implicit val executionContext = system.dispatcher
 
-  val bindingFuture = Http().bindAndHandle(route, "192.168.1.6", 8080)
+  val bindingFuture = Http().bindAndHandle(route, "192.168.1.5", 8080)
 
   println(s"Server online at http://localhost:8080/\nPress RETURN to stop...")
   StdIn.readLine() // let it run until user presses return

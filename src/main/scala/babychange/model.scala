@@ -1,9 +1,8 @@
 package babychange
 
 import akka.http.scaladsl.model.DateTime
-import spray.json.{JsonFormat, _}
 
-object model extends DefaultJsonProtocol {
+object model {
 
   case class  TimeOfDay(minutesSinceMidnight: Short) {
     override def toString: String = {
@@ -34,7 +33,10 @@ object model extends DefaultJsonProtocol {
     require(values.values.forall(tags => tags.contains("Yes") || tags.contains("No") || tags.contains("Unknown")), "All facilities must contain a Yes or No or Unknown. " + this.toString)
   }
 
-  case class Place(id: String, name: String, categories: String, address: String, phone: String, location: GeoLocation, facilities: Facilities, openingHours: OpeningHours)
+  case class Facility(name: String, queryName: String, values: Vector[String])
+  case class NewPlace(name: String, categories: String, address: String, phone: String, location: GeoLocation, facilities: Vector[Facility], openingHours: Option[OpeningHours])
+
+  case class Place(id: Option[String], name: String, categories: String, address: String, phone: String, location: GeoLocation, facilities: Facilities, openingHours: Option[OpeningHours])
 
   case class PlaceSearchResult(place: Place, distanceInMetres: Int)
 
@@ -62,7 +64,6 @@ object model extends DefaultJsonProtocol {
   case class NewReview(rating: Float, place: String, facilities: Vector[String], review: String) {
     require(rating >= 0.0 && rating <= 5.0, "rating must be between 0.0 and 5.0")
   }
-  case class NewReviewResponse(success: Boolean, cause: Option[String])
   case class Review(rating: Float, date: UtcDate, place: String, placeLocation: GeoLocation, facilities: Vector[String], review: String, user: String)
   case class ReviewResults(reviews: Vector[Review], averageRating: Float)
 
@@ -71,53 +72,4 @@ object model extends DefaultJsonProtocol {
 //  override implicit def vectorFormat[T :JsonFormat] = new JsonFormat[Vector[T]] {
 //
 //  }
-
-  implicit object UtcDateFormat extends JsonFormat[UtcDate] {
-    override def read(json: JsValue): UtcDate = json match {
-      case JsString(s) => UtcDate.parse(s)
-      case x => deserializationError(x + " is not a valid UtcDate")
-    }
-    override def write(date: UtcDate): JsValue = JsString(date.toString)
-  }
-
-  implicit object EsVectorFormat extends JsonFormat[Vector[String]] {
-    override def read(json: JsValue): Vector[String] = json match {
-      case JsString(s) => Vector(s)
-      case JsArray(elements) => elements collect { case JsString(s) => s }
-      case x => deserializationError(x + " is not a valid Vector[String]")
-    }
-    override def write(strings: Vector[String]): JsValue = JsArray(strings.map(JsString.apply))
-  }
-
-  implicit object TimeOfDayFormat extends JsonFormat[TimeOfDay] {
-    override def read(json: JsValue): TimeOfDay = json match {
-      case JsNumber(num) => TimeOfDay(num.toShort)
-      case x => deserializationError(x + " is not a valid TimeOfDay")
-    }
-    override def write(obj: TimeOfDay): JsValue = JsString(obj.toString)
-  }
-
-  implicit object FacilitiesFormat extends JsonFormat[Facilities] {
-    override def write(obj: Facilities): JsValue = {
-      val facilitiesJsons = obj.values.map { case (name, values) =>
-        JsObject("name" -> JsString(filters.facilityFilterNameLookup.getOrElse(name, name)), "queryName" -> JsString(name), "values" -> values.toJson)
-      }
-      JsArray(facilitiesJsons.toVector)
-    }
-
-    override def read(json: JsValue): Facilities =
-      Facilities(json.convertTo[Map[String,Vector[String]]])
-  }
-
-  implicit val DayOpeningHoursFormat = jsonFormat2(DayOpeningHours.apply)
-  implicit val OpeningHoursFormat = jsonFormat7(OpeningHours.apply)
-  implicit val GeoLocationFormat = jsonFormat2(GeoLocation.apply)
-  implicit val PlaceFormat = jsonFormat8(Place.apply)
-  implicit val PlaceSearchResultFormat = jsonFormat2(PlaceSearchResult.apply)
-  implicit val PlaceSearchResultsFormat = jsonFormat1(PlaceSearchResults.apply)
-
-  implicit val NewReviewFormat = jsonFormat4(NewReview.apply)
-  implicit val NewReviewResponseFormat = jsonFormat2(NewReviewResponse.apply)
-  implicit val ReviewFormat = jsonFormat7(Review.apply)
-  implicit val ReviewResultsFormat = jsonFormat2(ReviewResults.apply)
 }

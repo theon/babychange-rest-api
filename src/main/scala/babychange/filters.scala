@@ -5,7 +5,7 @@ import spray.json.DefaultJsonProtocol._
 object filters {
 
   case class AllowedFilters(facility: Vector[AllowedFilterValues])
-  case class AllowedFilterValues(name: String, queryName: String, allowedValues: Vector[String])
+  case class AllowedFilterValues(name: String, queryName: String, values: Vector[String])
 
   implicit val AllowedFilterValuesFormat = jsonFormat3(AllowedFilterValues.apply)
   implicit val AllowedFiltersFormat = jsonFormat1(AllowedFilters.apply)
@@ -14,8 +14,8 @@ object filters {
     "babyChanging" -> "Baby Changing",
     "highchairs" -> "Highchairs",
     "kidsMenu" -> "Kids' Menu",
-    "babyFeedingFriendly" -> "Baby Feeding",
-    "buggyFriendly" -> "Buggies",
+    "babyFeedingFriendly" -> "Baby Feeding Friendly",
+    "buggyFriendly" -> "Buggy Friendly",
     "playArea" -> "Play Area"
   )
 
