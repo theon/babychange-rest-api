@@ -9,10 +9,11 @@ import akka.stream.{ActorMaterializer, ActorMaterializerSettings}
 import babychange.ElasticSearchClient._
 import babychange.filters.{CategoryFilter, FacilityFilter}
 import babychange.model._
-import jsonformats.ElasticSearchJsonFormats._
 import spray.json._
 
-import scala.concurrent.Future
+import scala.concurrent.{ExecutionContext, Future}
+
+// TODO: AWS Signing: http://169.254.169.254/latest/meta-data/iam/security-credentials/AccessBabyChangeElasticSearch
 
 object ElasticSearchClient {
   case class EsPlaceResponse(hits: EsPlaceHits)
@@ -26,16 +27,112 @@ object ElasticSearchClient {
   case class EsAggregation(value: Float)
 
   case class IndexResult(_id: String)
+
+  object JsonFormats extends DefaultJsonProtocol {
+
+    implicit object UtcDateFormat extends JsonFormat[UtcDate] {
+      override def read(json: JsValue): UtcDate = json match {
+        case JsString(s) => UtcDate.parse(s)
+        case x => deserializationError(x + " is not a valid UtcDate")
+      }
+      override def write(date: UtcDate): JsValue = JsString(date.toString)
+    }
+
+    implicit object TimeOfDayFormat extends JsonFormat[TimeOfDay] {
+      override def read(json: JsValue): TimeOfDay = json match {
+        case JsNumber(minutesSinceMidnight) => TimeOfDay(minutesSinceMidnight.toShort)
+        case x => deserializationError("TimeOfDay expected JsNumber, got " + x)
+      }
+      override def write(obj: TimeOfDay): JsValue = JsNumber(obj.minutesSinceMidnight)
+    }
+    implicit val DayOpeningHoursFormat: RootJsonFormat[DayOpeningHours] = jsonFormat2(DayOpeningHours.apply)
+    implicit val OpeningHoursFormat: RootJsonFormat[OpeningHours] = jsonFormat7(OpeningHours.apply)
+    implicit val GeoLocationFormat: RootJsonFormat[GeoLocation] = jsonFormat2(GeoLocation.apply)
+
+    implicit val FacilityTagFormat: RootJsonFormat[FacilityTag] = jsonFormat2(FacilityTag.apply)
+    implicit val FacilityFormat: RootJsonFormat[Facility] = new RootJsonFormat[Facility] {
+      override def write(obj: Facility): JsValue = {
+        JsObject()
+      }
+
+      override def read(json: JsValue): Facility = ???
+    }
+
+    implicit val EsPlaceFormat: RootJsonFormat[Place] = new RootJsonFormat[Place] {
+      val delegate = jsonFormat8(Place.apply)
+      override def write(place: Place): JsValue = {
+        val facilityTags: Map[String,Vector[String]] =
+          place.facilities.groupBy(_.queryName).mapValues(_.flatMap(_.tagQueryNames))
+        JsObject(
+          "name" -> JsString(place.name),
+          "address" -> JsString(place.address),
+          "phone" -> JsString(place.phone),
+          "categories" -> JsString(place.categories),
+          "location" -> place.location.toJson,
+          "openingHours" -> place.openingHours.toJson,
+          "facilities" -> facilityTags.toJson
+        )
+      }
+      override def read(json: JsValue) =
+        deserializationError("Use EsPlaceHitFormat, rather than EsPlaceFormat directly!")
+    }
+
+    implicit val ReviewFormat: RootJsonFormat[Review] = jsonFormat7(Review.apply)
+
+    implicit object EsPlaceHitFormat extends JsonFormat[EsPlaceHit] {
+      override def write(obj: EsPlaceHit): JsValue = ???
+      override def read(json: JsValue): EsPlaceHit = {
+        val hitJson = json.asJsObject
+        val JsString(placeId) = hitJson.fields("_id")
+        val JsArray(sorts) = hitJson.fields("sort")
+        val JsNumber(distance) = sorts.head
+        val placeJsonNoId = hitJson.fields("_source").asJsObject
+        val place  = readPlace(placeId, placeJsonNoId)
+        EsPlaceHit(place, distance.toInt)
+      }
+
+      protected def readPlace(id: String, json: JsObject): Place = {
+        json.getFields("name", "address", "phone", "categories", "location", "facilities") match {
+          case Seq(JsString(name), JsString(address), JsString(phone), JsString(categories), location, JsObject(facilitiesFields)) =>
+            val locationObj = location.convertTo[GeoLocation]
+            val openingHoursObj = json.fields.get("openingHours").filterNot(_ == JsNull).map(_.convertTo[OpeningHours])
+            val facilities = facilitiesFields.map { case (facilityQueryName, tagsJson) =>
+              val tagsVector = tagsJson match {
+                case JsArray(tags) => tags.collect { case JsString(s) => FacilityTag(s) }
+                case JsString(tag) => Vector(FacilityTag(tag))
+                case tags => deserializationError(s"Expected JsString or JsArray for FacilityTag(s), but for $facilityQueryName, got $tags")
+              }
+              Facility(facilityQueryName, tagsVector)
+            }
+            Place(id, name, categories, address, phone, locationObj, facilities.toVector, openingHoursObj)
+        }
+      }
+    }
+    implicit val EsPlaceHitsFormat: RootJsonFormat[EsPlaceHits] = jsonFormat1(EsPlaceHits.apply)
+    implicit val EsPlaceResponseFormat: RootJsonFormat[EsPlaceResponse] = jsonFormat1(EsPlaceResponse.apply)
+
+    implicit val EsAggregationFormat: RootJsonFormat[EsAggregation] = jsonFormat1(EsAggregation.apply)
+    implicit val EsAggregationsFormat: RootJsonFormat[EsAggregations] = jsonFormat1(EsAggregations.apply)
+    implicit val EsReviewHitFormat: RootJsonFormat[EsReviewHit] = jsonFormat1(EsReviewHit.apply)
+    implicit val EsReviewHitsFormat: RootJsonFormat[EsReviewHits] = jsonFormat1(EsReviewHits.apply)
+    implicit val EsReviewResponseFormat: RootJsonFormat[EsReviewResponse] = jsonFormat2(EsReviewResponse.apply)
+
+    implicit val IndexResultFormat: RootJsonFormat[IndexResult] = jsonFormat1(IndexResult.apply)
+  }
 }
 
 class ElasticSearchClient(implicit system: ActorSystem) {
 
+  import ElasticSearchClient.JsonFormats._
+
   implicit val materializer: ActorMaterializer = ActorMaterializer(ActorMaterializerSettings(system))
-  implicit val executionContext = system.dispatcher
+  implicit val executionContext: ExecutionContext = system.dispatcher
+
+  val baseUrl = system.settings.config.getString("babychange.elasticsearch.baseUrl")
 
   def findPlacesNearby(lat: Double, lon: Double, facilities: FacilityFilter, categories: CategoryFilter): Future[PlaceSearchResults] = {
     val request = HttpRequest(
-      uri = "http://localhost:9200/places/place/_search",
+      uri = s"$baseUrl/places/place/_search",
       entity = HttpEntity(
         s"""
              {
@@ -90,11 +187,11 @@ class ElasticSearchClient(implicit system: ActorSystem) {
     } yield PlaceSearchResults(places)
   }
 
-  def createReview(newReview: NewReview): Future[Review] = {
-    val review = Review(newReview.rating, UtcDate.now, newReview.place, GeoLocation(0, 0), newReview.facilities, newReview.review, "-1")
+  def createReview(user: String, newReview: NewReview): Future[Review] = {
+    val review = Review(newReview.rating, UtcDate.now, newReview.place, GeoLocation(0, 0), newReview.facilities, newReview.review, user)
     val request = HttpRequest(
       method = HttpMethods.POST,
-      uri = "http://localhost:9200/reviews/review",
+      uri = s"$baseUrl/reviews/review",
       entity = HttpEntity(review.toJson.compactPrint) //TODO: Prevent query injection!
     )
 
@@ -106,14 +203,11 @@ class ElasticSearchClient(implicit system: ActorSystem) {
     }
   }
 
-  def createPlace(newPlace: NewPlace): Future[Place] = {
-    val facilitiesMap = newPlace.facilities.map(f => f.queryName -> f.values).toMap
-    println(facilitiesMap)
-    val place = Place(None, newPlace.name, newPlace.categories, newPlace.address, newPlace.phone, newPlace.location, Facilities(facilitiesMap), newPlace.openingHours)
+  def createPlace(place: Place): Future[Place] = {
 
     val request = HttpRequest(
       method = HttpMethods.POST,
-      uri = "http://localhost:9200/places/place",
+      uri = s"$baseUrl/places/place",
       entity = HttpEntity(place.toJson.compactPrint) //TODO: Prevent query injection!
     )
 
@@ -130,14 +224,14 @@ class ElasticSearchClient(implicit system: ActorSystem) {
       r <- response
       indexResult <- Unmarshal(r.entity).to[IndexResult]
     } yield {
-      place.copy(id = Some(indexResult._id))
+      place.copy(id = indexResult._id)
     }
   }
 
   def findReviewsForPlace(placeId: String): Future[ReviewResults] = {
     //TODO: Prevent query injection
     val request = HttpRequest(
-      uri = "http://localhost:9200/reviews/review/_search",
+      uri = s"$baseUrl/reviews/review/_search",
       entity = HttpEntity(
         s"""{
               "query": {

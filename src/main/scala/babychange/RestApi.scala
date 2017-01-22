@@ -1,15 +1,13 @@
 package babychange
 
 import akka.actor.ActorSystem
-import akka.http.scaladsl.server.Directives._
-import akka.http.scaladsl.server.{RejectionError, ValidationRejection}
-import akka.stream.ActorMaterializer
 import akka.http.scaladsl.marshallers.sprayjson.SprayJsonSupport._
-import akka.http.scaladsl.model.StatusCodes
+import akka.http.scaladsl.server.Directives._
+import akka.http.scaladsl.server.{Directive1, RejectionError, ValidationRejection}
+import akka.stream.ActorMaterializer
 import babychange.filters._
+import babychange.model.JsonFormats._
 import babychange.model._
-import jsonformats.PublicApiJsonFormats._
-import spray.json._
 
 import scala.concurrent.ExecutionContext
 import scala.util.{Failure, Success}
@@ -47,7 +45,13 @@ trait RestApi {
 
   val filters = facilityFilters & categoryFilters
 
-  val route =
+  val crappyAuth: Directive1[String] = headerValueByName("Authorization").flatMap {
+    case "Ian" => provide("Ian")
+    case "Frances" => provide("Frances")
+    case _ => reject
+  }
+
+  val route = crappyAuth { user =>
     get {
       path("places" / Latitude ~ "," ~ Longitude) { (lat, lon) =>
         filters { (facilities, categories) =>
@@ -56,16 +60,16 @@ trait RestApi {
       } ~
       path("reviews") {
         parameter("place") { placeId =>
-          complete(elasticSearchClient.findReviewsForPlace(placeId).map(_.toJson))
+          complete(elasticSearchClient.findReviewsForPlace(placeId))
         }
       } ~
       path("filters") {
-        complete(allowedFilters)
+        complete(AllowedFilters(AllFacilities.allFacilities))
       }
     } ~
     post {
       path("places") {
-        entity(as[NewPlace]) { newPlace: NewPlace =>
+        entity(as[Place]) { newPlace: Place =>
           onComplete(elasticSearchClient.createPlace(newPlace)) {
             case Success(place) =>
               complete(place)
@@ -77,13 +81,15 @@ trait RestApi {
       path("reviews") {
         entity(as[NewReview]) { newReview: NewReview =>
                 //TODO: Auth
-          onComplete(elasticSearchClient.createReview(newReview)) {
+          onComplete(elasticSearchClient.createReview(user, newReview)) {
             case Success(review) =>
-                complete(review.toJson)
+                complete(review)
             case Failure(e) =>
               complete(500, "Failed to create review")
           }
         }
       }
     }
+  }
 }
+
