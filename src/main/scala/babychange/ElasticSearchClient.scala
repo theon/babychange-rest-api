@@ -3,8 +3,9 @@ package babychange
 import akka.actor.ActorSystem
 import akka.http.scaladsl.Http
 import akka.http.scaladsl.marshallers.sprayjson.SprayJsonSupport._
-import akka.http.scaladsl.model.{HttpEntity, HttpMethods, HttpRequest}
+import akka.http.scaladsl.model.{HttpEntity, HttpMethods, HttpRequest, HttpResponse}
 import akka.http.scaladsl.unmarshalling.Unmarshal
+import akka.stream.scaladsl.{Flow, Sink, Source}
 import akka.stream.{ActorMaterializer, ActorMaterializerSettings}
 import babychange.ElasticSearchClient._
 import babychange.filters.{CategoryFilter, FacilityFilter}
@@ -12,8 +13,7 @@ import babychange.model._
 import spray.json._
 
 import scala.concurrent.{ExecutionContext, Future}
-
-// TODO: AWS Signing: http://169.254.169.254/latest/meta-data/iam/security-credentials/AccessBabyChangeElasticSearch
+import scala.util.{Failure, Success, Try}
 
 object ElasticSearchClient {
   case class EsPlaceResponse(hits: EsPlaceHits)
@@ -128,7 +128,16 @@ class ElasticSearchClient(implicit system: ActorSystem) {
   implicit val materializer: ActorMaterializer = ActorMaterializer(ActorMaterializerSettings(system))
   implicit val executionContext: ExecutionContext = system.dispatcher
 
-  val baseUrl = system.settings.config.getString("babychange.elasticsearch.baseUrl")
+  def config = system.settings.config
+
+  // TODO: AWS Signing: http://169.254.169.254/latest/meta-data/iam/security-credentials/babychange-prod-restapi-RestApiBackendRole-1BL927QD80RBM
+
+  val signer: SignatureV4Signer = Try(config.getString("babychange.elasticsearch.iamRole")) match {
+    case Success(role) => println("ec2Instance signer!"); SignatureV4Signer.ec2Instance(role)
+    case Failure(_) => println("environmentVariables signer!"); SignatureV4Signer.environmentVariables()
+  }
+
+  val baseUrl: String = config.getString("babychange.elasticsearch.baseUrl")
 
   def findPlacesNearby(lat: Double, lon: Double, facilities: FacilityFilter, categories: CategoryFilter): Future[PlaceSearchResults] = {
     val request = HttpRequest(
@@ -176,7 +185,7 @@ class ElasticSearchClient(implicit system: ActorSystem) {
 
 //    println(request)
 
-    val response = Http().singleRequest(request)
+    val response = singleRequest(request)
 
     for {
       r <- response
@@ -195,7 +204,7 @@ class ElasticSearchClient(implicit system: ActorSystem) {
       entity = HttpEntity(review.toJson.compactPrint) //TODO: Prevent query injection!
     )
 
-    Http().singleRequest(request).map { response =>
+    singleRequest(request).map { response =>
         if(response.status.isSuccess())
           review
         else
@@ -211,7 +220,7 @@ class ElasticSearchClient(implicit system: ActorSystem) {
       entity = HttpEntity(place.toJson.compactPrint) //TODO: Prevent query injection!
     )
 
-    val response = Http().singleRequest(request)
+    val response = singleRequest(request)
 
     import scala.concurrent.duration._
     response.flatMap(_.entity.toStrict(5.seconds)).foreach { response =>
@@ -250,12 +259,27 @@ class ElasticSearchClient(implicit system: ActorSystem) {
             }""")
     )
 
-    val response = Http().singleRequest(request)
+    val response = singleRequest(request)
 
     for {
       r <- response
       esResponse <- Unmarshal(r.entity).to[EsReviewResponse]
       reviews = esResponse.hits.hits.map(_._source)
     } yield ReviewResults(reviews, esResponse.aggregations.averageRating.value)
+  }
+
+//  val connectionFlow: Flow[HttpRequest, HttpResponse, Future[Http.OutgoingConnection]] =
+//    Http().outgoingConnection("search-babychange-prod-xdgcfgb2jc4tlmf7s6b4z3g62m.eu-west-1.es.amazonaws.com", 443)
+  
+  def singleRequest(request: HttpRequest): Future[HttpResponse] = {
+    //Source.single(request).via(signer.sign).via(connectionFlow).runWith(Sink.head)
+    val res = Http().singleRequest(signer.sign(request))
+
+    res.foreach { response =>
+      response.entity.dataBytes.runForeach(bs => println(bs.decodeString("UTF-8")))
+
+    }
+
+    res
   }
 }
