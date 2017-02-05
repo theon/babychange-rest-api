@@ -268,12 +268,12 @@ class ElasticSearchClient(implicit system: ActorSystem) {
     } yield ReviewResults(reviews, esResponse.aggregations.averageRating.value)
   }
 
-//  val connectionFlow: Flow[HttpRequest, HttpResponse, Future[Http.OutgoingConnection]] =
-//    Http().outgoingConnection("search-babychange-prod-xdgcfgb2jc4tlmf7s6b4z3g62m.eu-west-1.es.amazonaws.com", 443)
+  val connectionFlow: Flow[HttpRequest, HttpResponse, Future[Http.OutgoingConnection]] =
+    Http().outgoingConnectionHttps("search-babychange-prod-xdgcfgb2jc4tlmf7s6b4z3g62m.eu-west-1.es.amazonaws.com", 443)
   
   def singleRequest(request: HttpRequest): Future[HttpResponse] = {
-    //Source.single(request).via(signer.sign).via(connectionFlow).runWith(Sink.head)
-    val res = Http().singleRequest(signer.sign(request))
+    val res = Source.single(request).via(signer.signFlow).via(connectionFlow).runWith(Sink.head)
+    //val res = Http().singleRequest(signer.sign(request))
 
     res.foreach { response =>
       response.entity.dataBytes.runForeach(bs => println(bs.decodeString("UTF-8")))

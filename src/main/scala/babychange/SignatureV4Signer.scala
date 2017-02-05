@@ -4,12 +4,14 @@ import java.security.MessageDigest
 import javax.crypto.Mac
 import javax.crypto.spec.SecretKeySpec
 
+import akka.NotUsed
 import akka.actor.{Actor, ActorLogging, ActorRef, ActorSystem, Props, Status}
 import akka.http.scaladsl.Http
 import akka.http.scaladsl.model.HttpEntity.Strict
 import akka.http.scaladsl.model.headers._
 import akka.http.scaladsl.model.{DateTime, HttpCharsets, HttpEntity, HttpRequest}
 import akka.pattern.{ask, pipe}
+import akka.stream.scaladsl.{Flow, GraphDSL, RunnableGraph, Source, Zip}
 import akka.stream.{ActorMaterializer, ActorMaterializerSettings}
 import akka.util.{ByteString, Timeout}
 import babychange.Ec2CredentialsRetriever.{GetCredentials, UpdateCredentials}
@@ -23,18 +25,19 @@ import scala.util.{Failure, Success, Try}
 object SignatureV4Signer {
   case class AwsCredentials(accessKeyId: String, secretAccessKey: String, token: Option[String])
 
-  def basic(accessKeyId: String, secretAccessKey: String) = new SignatureV4Signer {
+  def basic(accessKeyId: String, secretAccessKey: String)(implicit as: ActorSystem) = new SignatureV4Signer {
+    val system = as
     protected val credentials: Future[AwsCredentials] =
       Future.successful(AwsCredentials(accessKeyId, secretAccessKey, None))
   }
 
-  def environmentVariables() =
+  def environmentVariables()(implicit as: ActorSystem) =
     basic(sys.env("AWS_ACCESS_KEY_ID"), sys.env("AWS_SECRET_ACCESS_KEY"))
 
   def ec2Instance(roleName: String)(implicit system: ActorSystem) = new Ec2Signer(roleName, system)
 }
 
-class Ec2Signer(val roleName: String, system: ActorSystem) extends SignatureV4Signer {
+class Ec2Signer(val roleName: String, val system: ActorSystem) extends SignatureV4Signer {
   implicit val timeout = Timeout(system.settings.config.getDuration("sigv4.ec2.readTimeout").toMillis.millis)
   val credentialsRetriever = system.actorOf(Props(classOf[Ec2CredentialsRetriever], roleName))
   protected def credentials: Future[AwsCredentials] = (credentialsRetriever ? GetCredentials).mapTo[AwsCredentials]
@@ -111,13 +114,19 @@ class Ec2CredentialsRetriever(roleName: String) extends Actor with ActorLogging 
 }
 
 trait SignatureV4Signer {
+
+  protected def system: ActorSystem
   protected def credentials: Future[AwsCredentials]
 
-  //def sign: Flow[HttpRequest, HttpRequest, NotUsed]
+  implicit def ec: ExecutionContext = system.dispatcher
 
-  def sign: HttpRequest => HttpRequest = /*Flow.fromFunction */{ rBefore: HttpRequest =>
+  val signFlow: Flow[HttpRequest, HttpRequest, NotUsed] = Flow[HttpRequest].mapAsync(1) { request =>
+    credentials.map(creds => sign(request, creds))
+  }
 
-    val AwsCredentials(accessKeyId, secretAccessKey, token) = Await.result(credentials, 5.seconds)
+  protected def sign(rBefore: HttpRequest, creds: AwsCredentials): HttpRequest = {
+
+    val AwsCredentials(accessKeyId, secretAccessKey, token) = creds
 
     val r = rBefore.copy(headers = rBefore.headers :+ Host(rBefore.uri.authority.host.address()))
 
